@@ -19,6 +19,8 @@ namespace vevodl {
 
 			while(true) {
 
+				List<(string ISRC, string Version)> Releases = null;
+
 				Console.Write("[Search for an ISRC? (y/n)]: ");
 				ConsoleKey Input = Console.ReadKey().Key;
 				DeleteCurrentLine();
@@ -27,72 +29,73 @@ namespace vevodl {
 					string Artist = Console.ReadLine();
 					Console.Write("[Title]: ");
 					string Title = Console.ReadLine();
-					ISRCDB.Search(Artist, Title);
+					Releases = ISRCDB.Search(Artist, Title);
+				} else {
+					bool InvalidISRC = false;
+					do {
+						if (InvalidISRC) {
+							Logger.Error(Releases.First().ISRC + " is an invalid ISRC string...");
+						}
+						Console.Write("[ISRC]: ");
+						Releases = new List<(string, string)> { (Console.ReadLine().ToUpperInvariant(), string.Empty) };
+						DeleteConsoleLines(1);
+					} while (Releases == null || (InvalidISRC = !Regex.Match(Releases.First().ISRC, "^[A-Z]{2}-?\\w{3}-?\\d{2}-?\\d{5}$").Success));
 				}
 
-				#region Obtain an ISRC from the User
-				string ISRC = string.Empty; //USUV70900886
-				bool InvalidISRC = false;
-				do {
-					if(InvalidISRC) {
-						Logger.Error(ISRC + " is an invalid ISRC string...");
-					}
-					Console.Write("[ISRC]: ");
-					ISRC = Console.ReadLine().ToUpperInvariant();
-					DeleteConsoleLines(1);
-				} while (InvalidISRC = !Regex.Match(ISRC, "^[A-Z]{2}-?\\w{3}-?\\d{2}-?\\d{5}$").Success);
-				#endregion
-				#region Attempt to Query the ISRC to VEVO
-				if (!VEVO.Query(ISRC)) {
-					continue;
-				}
-				#endregion
-				#region Download HLS Catalogue to MKV File
-				string Filename = VEVO.Artist + " - " + VEVO.Title;
-				string HLSCatalogue = VEVO.HLSCatalogue;
-				Logger.Info(" :=: Downloading " + ISRC + " as \"" + Filename + ".mkv\" :=:");
-				#region Subtitles
-				if(!string.IsNullOrEmpty(VEVO.Subtitle)) {
-					#region Download Subtitle M3U8 File as a VTT
-					DownloadM3U8(VEVO.Subtitle, "vtt");
-					#endregion
-					#region Fix VTT Subtitle
-					// For some reason the VTT has a ton of garbage not parsed properly with ffmpeg, no idea who to fault but they manually need to be removed.
-					// "WEBVTT FILE" line has an odd character in front of it, so a .EndsWith is needed.
-					// The timestamp line may be specific to each video im not sure.
-					File.WriteAllLines("temp/.vtt", File.ReadAllLines("temp/.vtt", Encoding.UTF8).Select(l => l.Trim()).Where(l => l != "WEBVTT" && !l.EndsWith("WEBVTT FILE") && l != "X-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000"), Encoding.UTF8);
-					#endregion
-					#region Convert VTT to SRT
-					if (RunEXE("SubtitleEdit.exe", "/convert \"temp/.vtt\" srt /overwrite") != 0) {
-						Logger.Error("Failed to convert the VTT subtitles to SRT, ignoring subtitles and continuing without them!");
-						if (File.Exists("temp/.vtt")) {
-							File.Delete("temp/.vtt");
-						}
-						if (File.Exists("temp/.srt")) {
-							File.Delete("temp/.srt");
-						}
+				foreach ((string ISRC, string Version) Release in Releases) {
+					string ISRC = Release.ISRC;
+					string Version = VEVO.Sanitize(Release.Version);
+					#region Attempt to Query the ISRC to VEVO
+					if (!VEVO.Query(ISRC)) {
+						continue;
 					}
 					#endregion
+					#region Download HLS Catalogue to MKV File
+					string Filename = VEVO.Artist + " - " + VEVO.Title + (Version != string.Empty ? " [" + Version + "]" : string.Empty) + " [" + ISRC + "]";
+					string HLSCatalogue = VEVO.HLSCatalogue;
+					Logger.Info(" :=: Downloading " + ISRC + " as \"" + Filename + ".mkv\" :=:");
+					#region Subtitles
+					if (!string.IsNullOrEmpty(VEVO.Subtitle)) {
+						#region Download Subtitle M3U8 File as a VTT
+						DownloadM3U8(VEVO.Subtitle, "vtt");
+						#endregion
+						#region Fix VTT Subtitle
+						// For some reason the VTT has a ton of garbage not parsed properly with ffmpeg, no idea who to fault but they manually need to be removed.
+						// "WEBVTT FILE" line has an odd character in front of it, so a .EndsWith is needed.
+						// The timestamp line may be specific to each video im not sure.
+						File.WriteAllLines("temp/.vtt", File.ReadAllLines("temp/.vtt", Encoding.UTF8).Select(l => l.Trim()).Where(l => l != "WEBVTT" && !l.EndsWith("WEBVTT FILE") && l != "X-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000"), Encoding.UTF8);
+						#endregion
+						#region Convert VTT to SRT
+						if (RunEXE("SubtitleEdit.exe", "/convert \"temp/.vtt\" srt /overwrite") != 0) {
+							Logger.Error("Failed to convert the VTT subtitles to SRT, ignoring subtitles and continuing without them!");
+							if (File.Exists("temp/.vtt")) {
+								File.Delete("temp/.vtt");
+							}
+							if (File.Exists("temp/.srt")) {
+								File.Delete("temp/.srt");
+							}
+						}
+						#endregion
+					}
+					#endregion
+					#region TS (Video/Audio)
+					DownloadM3U8(VEVO.TS);
+					#endregion
+					#region Mux everything into an MKV
+					if (RunEXE("mkvmerge.exe", "--output \"" + Path.Combine(ROOTDIR, Filename.Replace("/", "-") + ".mkv") + "\" \"" + Path.Combine(ROOTDIR, "temp", ".ts") + "\" --default-track 0:false " + (File.Exists("temp/.chapters") ? "--chapters \"" + Path.Combine(ROOTDIR, "temp", ".chapters") + "\"" : string.Empty) + " " + (File.Exists("temp/.srt") ? "--sub-charset 0:UTF-8 \"" + Path.Combine(ROOTDIR, "temp", ".srt") + "\"" : string.Empty)) != 0) {
+						return;
+					}
+					// Cleanup files no longer needed
+					// todo: setup files in such a way to be multi-threaded supported and not conflict with other downloads at same time
+					File.Delete("temp/.ts");
+					File.Delete("temp/.srt");
+					File.Delete("temp/.chapters");
+					#endregion
+					Console.ForegroundColor = ConsoleColor.Green;
+					Console.WriteLine("Downloaded!");
+					Console.ResetColor();
+					#endregion
 				}
-				#endregion
-				#region TS (Video/Audio)
-				DownloadM3U8(VEVO.TS);
-				#endregion
-				#region Mux everything into an MKV
-				Logger.Info("Using MKVMERGE to mux everything to a single MKV file");
-				if (RunEXE("mkvmerge.exe", "--output \"" + Path.Combine(ROOTDIR, Filename.Replace("/", "-") + ".mkv") + "\" \"" + Path.Combine(ROOTDIR, "temp", ".ts") + "\" --default-track 0:false " + (File.Exists("temp/.chapters") ? "--chapters \"" + Path.Combine(ROOTDIR, "temp", ".chapters") + "\"" : string.Empty) + " " + (File.Exists("temp/.srt") ? "--sub-charset 0:UTF-8 \"" + Path.Combine(ROOTDIR, "temp", ".srt") + "\"" : string.Empty)) != 0) {
-					return;
-				}
-				// Cleanup files no longer needed
-				// todo: setup files in such a way to be multi-threaded supported and not conflict with other downloads at same time
-				File.Delete("temp/.ts");
-				File.Delete("temp/.srt");
-				File.Delete("temp/.chapters");
-				#endregion
-				Console.ForegroundColor = ConsoleColor.Green;
-				Console.WriteLine("Downloaded!");
-				Console.ResetColor();
-				#endregion
 
 			}
 		}
@@ -130,7 +133,6 @@ namespace vevodl {
 			return p.ExitCode;
 		}
 		private static void DownloadM3U8(string URL, string Type = "ts") {
-			Logger.Info("Downloading M3U8 " + Type.ToUpperInvariant() + " Segments in a Multi-Threaded environment to Segments Folder");
 			foreach (string dir in new[] { "temp", "temp/seg" }) {
 				Directory.CreateDirectory(dir);
 			}

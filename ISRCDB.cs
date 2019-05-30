@@ -1,5 +1,6 @@
 ﻿using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Text.RegularExpressions;
@@ -12,7 +13,7 @@ namespace vevodl {
 
 		/* API Settings */
 		private const string API_Endpoint = "https://isrcsearch.ifpi.org/";
-		private const int API_ResultsPerPage = 10;
+		private const int API_ResultsPerPage = 100;
 		
 		public static void GenerateSession() {
 			if (string.IsNullOrEmpty(CSRF) || string.IsNullOrEmpty(SESSIONID)) {
@@ -25,12 +26,14 @@ namespace vevodl {
 				WC = new WebClient();
 			}
 		}
-		public static void Search(string Artist, string Title = "") {
+		public static List<(string, string)> Search(string Artist, string Title = "") {
 			// Make sure we have CSRF and SESSIONID's
 			GenerateSession();
+			List<(string, string)> ISRCsToDownload = new List<(string, string)>();
 			int Start = 0;
+			ConsoleKey Input = ConsoleKey.NoName;
 			Logger.Info(" - - - - - - - - - - - - - - - - - - - - - ");
-			Logger.Info("Next Page: DPAD Right\nPrevious Page: DPAD Left\nTo start a download, copy the ISRC code and press DPAD Down to enter it.");
+			Logger.Info("Next Page: DPAD Right\nPrevious Page: DPAD Left\nTo download an ISRC from this page, press DPAD Down.\nTo try and download every ISRC returned by the query, press DPAD Up (this can take a while!).");
 			while (true) {
 				WC.Headers[HttpRequestHeader.Accept] = "application/json";
 				WC.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36";
@@ -48,29 +51,54 @@ namespace vevodl {
 					break;
 				}
 				Logger.Info("Page " + CurrentPage + "/" + TotalPages);
+				int l = Start;
 				foreach (JToken R in Results["displayDocs"]) {
-					Logger.Info(R["isrcCode"] + " :: " + R["artistName"] + " - " + R["trackTitle"] + " [" + (R["recordingYear"].ToString() != string.Empty ? R["recordingYear"] : "----") + "]" + (R["recordingVersion"].ToString() != string.Empty ? " (" + R["recordingVersion"] + ")" : string.Empty));
+					string ISRC = R["isrcCode"].ToString();
+					string ISRC_RegistrantCode = new string(ISRC.Skip(2).Take(3).ToArray());
+					string ISRC_DesignationCode = new string(ISRC.Skip(7).Take(5).ToArray());
+					string RArtist = R["artistName"].ToString();
+					string RTitle = R["trackTitle"].ToString();
+					string Version = R["recordingVersion"].ToString();
+					Console.ForegroundColor = (ISRC_RegistrantCode == "UV7" || ISRC_RegistrantCode == "IV2") && RArtist.ToLowerInvariant().Contains(Artist.ToLowerInvariant()) && RTitle.ToLowerInvariant().Contains(Title.ToLowerInvariant()) ? ConsoleColor.White : ConsoleColor.DarkGray;
+					Console.WriteLine((++l).ToString("000") + " :: " + ISRC + " :: " + RArtist + " - " + RTitle + " [" + (R["recordingYear"].ToString() != string.Empty ? R["recordingYear"] : "----") + "]" + (Version != string.Empty ? " (" + Version + ")" : string.Empty));
+					Console.ResetColor();
 				}
 				Logger.Info(" - - - - - - - - - - - - - - - - - - - - - ");
 				inputCheck:
-				ConsoleKey Input = Console.ReadKey().Key;
+				if(Input != ConsoleKey.UpArrow) {
+					Input = Console.ReadKey().Key;
+				}
 				switch (Input) {
 					case ConsoleKey.DownArrow:
-					return;
-					case ConsoleKey.RightArrow:
+					Logger.Info("[Which ISRC do you want to download? (#)]: ");
+					JToken SelectedRelease = Results["displayDocs"][int.Parse(Console.ReadLine()) - 1];
+					return new List<(string, string)> { (SelectedRelease["isrcCode"].ToString(), SelectedRelease["recordingVersion"].ToString()) };
+					case ConsoleKey.UpArrow:
+					if(Start == (Total - API_ResultsPerPage)) {
+						return ISRCsToDownload;
+					}
+					ISRCsToDownload.AddRange(Results["displayDocs"].Select(x => new ValueTuple<string, string>(x["isrcCode"].ToString(), x["recordingVersion"].ToString())).ToArray());
 					Program.DeleteConsoleLines(Results["displayDocs"].Count() + 3);
 					Start += API_ResultsPerPage;
 					break;
+					case ConsoleKey.RightArrow:
+					if(Start != (Total - API_ResultsPerPage)) {
+						Program.DeleteConsoleLines(Results["displayDocs"].Count() + 3);
+						Start += API_ResultsPerPage;
+					}
+					break;
 					case ConsoleKey.LeftArrow:
-					Program.DeleteConsoleLines(Results["displayDocs"].Count() + 3);
-					Start -= API_ResultsPerPage;
+					if(Start != 0) {
+						Program.DeleteConsoleLines(Results["displayDocs"].Count() + 3);
+						Start -= API_ResultsPerPage;
+					}
 					break;
 					default:
 					Program.DeleteCurrentLine();
 					goto inputCheck;
 				}
-
 			}
+			return null;
 		}
 	}
 }
