@@ -16,42 +16,15 @@ namespace vevodl {
 		static string ROOTDIR = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
 
 		static void Main(string[] args) {
-
 			while(true) {
-
-				List<(string ISRC, string Version)> Releases = null;
-
-				Console.Write("[Search for an ISRC? (y/n)]: ");
-				ConsoleKey Input = Console.ReadKey().Key;
-				DeleteCurrentLine();
-				if (Input == ConsoleKey.Y) {
-					Console.Write("[Artist]: ");
-					string Artist = Console.ReadLine();
-					Console.Write("[Title]: ");
-					string Title = Console.ReadLine();
-					Releases = ISRCDB.Search(Artist, Title);
-				} else {
-					bool InvalidISRC = false;
-					do {
-						if (InvalidISRC) {
-							Logger.Error(Releases.First().ISRC + " is an invalid ISRC string...");
-						}
-						Console.Write("[ISRC]: ");
-						Releases = new List<(string, string)> { (Console.ReadLine().ToUpperInvariant(), string.Empty) };
-						DeleteConsoleLines(1);
-					} while (Releases == null || (InvalidISRC = !Regex.Match(Releases.First().ISRC, "^[A-Z]{2}-?\\w{3}-?\\d{2}-?\\d{5}$").Success));
-				}
-
-				foreach ((string ISRC, string Version) Release in Releases) {
-					string ISRC = Release.ISRC;
-					string Version = VEVO.Sanitize(Release.Version);
+				foreach ((string ISRC, string Version) in Ask<bool>("Search for an ISRC", AskSettings.None) ? ISRCDB.Search(Ask<string>("Artist"), Ask<string>("Title")) : new List<(string, string)> { (Ask<string>("ISRC", AskSettings.Uppercase, "ISRC Code", @"^[A-Z]{2}-?\w{3}-?\d{2}-?\d{5}$"), string.Empty) }) {
 					#region Attempt to Query the ISRC to VEVO
 					if (!VEVO.Query(ISRC)) {
 						continue;
 					}
 					#endregion
 					#region Download HLS Catalogue to MKV File
-					string Filename = VEVO.Artist + " - " + VEVO.Title + (Version != string.Empty ? " [" + Version + "]" : string.Empty) + " [" + ISRC + "]";
+					string Filename = VEVO.Artist + " - " + VEVO.Title + (Version != string.Empty ? " [" + VEVO.Sanitize(Version) + "]" : string.Empty) + " [" + ISRC + "]";
 					string HLSCatalogue = VEVO.HLSCatalogue;
 					Logger.Info(" :=: Downloading " + ISRC + " as \"" + Filename + ".mkv\" :=:");
 					#region Subtitles
@@ -96,7 +69,43 @@ namespace vevodl {
 					Console.ResetColor();
 					#endregion
 				}
+			}
+		}
 
+		[Flags]
+		public enum AskSettings {
+			None = 0,
+			Uppercase = 1,
+			Lowercase = 2,
+			UniqueOnly = 4
+		}
+		public static T Ask<T>(string Question, AskSettings Settings = AskSettings.None, string AnswerName = "answer", string MatchPattern = null) {
+			try {
+				bool IsYesNo = typeof(T) == typeof(bool);
+				Console.Write("[" + Question + (IsYesNo ? "? (y/n)" : string.Empty) + "]: ");
+				object Answer = IsYesNo ? ((T)Convert.ChangeType(Console.ReadKey().Key == ConsoleKey.Y, typeof(T))) : (object)Console.ReadLine();
+				if (MatchPattern != null) {
+					if (typeof(T) != typeof(string)) {
+						Logger.Error("Code attempted to use a MatchPattern Question with a non string return type, this can't be done, oops.");
+						return default(T);
+					}
+					string AnswerAsStr = (string)Convert.ChangeType(Answer, typeof(string));
+					if (Settings.HasFlag(AskSettings.UniqueOnly)) {
+						AnswerAsStr = new string(AnswerAsStr.Distinct().ToArray());
+					}
+					if (Settings.HasFlag(AskSettings.Uppercase)) {
+						AnswerAsStr = AnswerAsStr.ToUpperInvariant();
+					} else if (Settings.HasFlag(AskSettings.Lowercase)) {
+						AnswerAsStr = AnswerAsStr.ToLowerInvariant();
+					}
+					if (!Regex.Match(AnswerAsStr, MatchPattern).Success) {
+						Logger.Error("\"" + AnswerAsStr + "\" is an invalid " + AnswerName + "...");
+						return Ask<T>(Question, Settings, AnswerName, MatchPattern);
+					}
+				}
+				return (T)Convert.ChangeType(Answer, typeof(T));
+			} finally {
+				DeleteCurrentLine();
 			}
 		}
 		public static void DeleteConsoleLines(int Lines) {
